@@ -167,19 +167,24 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
                 LOG.debug("not loading, skip timer checker");
                 return;
             }
-            // TODO: introduce cache for reload instead of throwing exceptions.
-            String errorMsg;
-            try {
-                RespContent content = dorisStreamLoad.handlePreCommitResponse(dorisStreamLoad.getPendingLoadFuture().get());
-                errorMsg = content.getMessage();
-            } catch (Exception e) {
-                errorMsg = e.getMessage();
-            }
 
-            loadException = new StreamLoadException(errorMsg);
-            LOG.error("stream load finished unexpectedly, interrupt worker thread! {}", errorMsg);
-            // set the executor thread interrupted in case blocking in write data.
-            executorThread.interrupt();
+            // double check the future, to avoid getting the old future
+            if (dorisStreamLoad.getPendingLoadFuture() != null
+                    && dorisStreamLoad.getPendingLoadFuture().isDone()) {
+                // TODO: introduce cache for reload instead of throwing exceptions.
+                String errorMsg;
+                try {
+                    RespContent content = dorisStreamLoad.handlePreCommitResponse(dorisStreamLoad.getPendingLoadFuture().get());
+                    errorMsg = content.getMessage();
+                } catch (Exception e) {
+                    errorMsg = e.getMessage();
+                }
+
+                loadException = new StreamLoadException(errorMsg);
+                LOG.error("stream load finished unexpectedly, interrupt worker thread! {}", errorMsg);
+                // set the executor thread interrupted in case blocking in write data.
+                executorThread.interrupt();
+            }
         }
     }
 
