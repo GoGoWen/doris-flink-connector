@@ -75,6 +75,14 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
     private transient Thread executorThread;
     private transient volatile Exception loadException = null;
 
+    // just for show the multi-thread issue
+    volatile boolean signal_future_is_done_and_is_handled_in_precommited = false;
+    volatile boolean signal_stop_load_continue_to_run = false;
+    volatile boolean signal_load_can_continue = false;
+    volatile boolean signal_that_stream_load_started_and_loading_is_set = false;
+
+
+
     public DorisWriter(Sink.InitContext initContext,
                        List<DorisWriterState> state,
                        DorisRecordSerializer<IN> serializer,
@@ -137,6 +145,12 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
         loading = false;
         Preconditions.checkState(dorisStreamLoad != null);
         RespContent respContent = dorisStreamLoad.stopLoad();
+
+        // wait the future is done and be handled
+        signal_future_is_done_and_is_handled_in_precommited = true;
+        while(!signal_stop_load_continue_to_run){}
+        signal_stop_load_continue_to_run = false;
+
         if (!DORIS_SUCCESS_STATUS.contains(respContent.getStatus())) {
             String errMsg = String.format("stream load error: %s, see more in %s", respContent.getMessage(), respContent.getErrorURL());
             throw new DorisRuntimeException(errMsg);
@@ -154,19 +168,39 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
         Preconditions.checkState(dorisStreamLoad != null);
         this.dorisStreamLoad.startLoad(labelGenerator.generateLabel(checkpointId + 1));
         this.loading = true;
+
+        // CODE not affect the result,just control the progress
+        signal_that_stream_load_started_and_loading_is_set = true;
+        while(!signal_load_can_continue){}
+        signal_load_can_continue = false;
+
         return Collections.singletonList(dorisWriterState);
     }
 
     private void checkDone() {
+        // CODE not affect the result,just control the progress
+        while (!signal_future_is_done_and_is_handled_in_precommited) {}
+        signal_future_is_done_and_is_handled_in_precommited = false;
+
         // the load future is done and checked in prepareCommit().
         // this will check error while loading.
         LOG.debug("start timer checker, interval {} ms", intervalTime);
         if (dorisStreamLoad.getPendingLoadFuture() != null
                 && dorisStreamLoad.getPendingLoadFuture().isDone()) {
+
+            // CODE not affect the result,just control the progress
+            signal_stop_load_continue_to_run = true;
+            while(!signal_that_stream_load_started_and_loading_is_set) {}
+            signal_that_stream_load_started_and_loading_is_set = false;
+
             if (!loading) {
                 LOG.debug("not loading, skip timer checker");
                 return;
             }
+
+            // CODE not affect the result, just control the progress
+            signal_load_can_continue = true;
+
             // TODO: introduce cache for reload instead of throwing exceptions.
             String errorMsg;
             try {
