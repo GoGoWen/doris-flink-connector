@@ -92,33 +92,41 @@ public class DorisCommitter implements Committer<DorisCommittable> {
             } catch (IOException e) {
                 LOG.error("commit transaction failed: ", e);
                 hostPort = RestService.getBackend(dorisOptions, dorisReadOptions, LOG);
+                if (retry == maxRetry) {
+                    throw new DorisRuntimeException("Commit failed " + e.getMessage());
+                }
                 continue;
             }
             statusCode = response.getStatusLine().getStatusCode();
             reasonPhrase = response.getStatusLine().getReasonPhrase();
             if (statusCode != 200) {
                 LOG.warn("commit failed with {}, reason {}", hostPort, reasonPhrase);
+                if (retry == maxRetry) {
+                    throw new DorisRuntimeException("Commit failed " + EntityUtils.toString(response.getEntity()));
+                }
                 hostPort = RestService.getBackend(dorisOptions, dorisReadOptions, LOG);
             } else {
-                break;
+                ObjectMapper mapper = new ObjectMapper();
+                if (response.getEntity() != null) {
+                    String loadResult = EntityUtils.toString(response.getEntity());
+                    Map<String, String> res = mapper.readValue(loadResult, new TypeReference<HashMap<String, String>>() {
+                    });
+                    if (res.get("status").equals(FAIL) && !ResponseUtil.isCommitted(res.get("msg"))) {
+                        if (retry == maxRetry) {
+                            throw new DorisRuntimeException("Commit failed " + loadResult);
+                        }
+                    } else {
+                        // commit succeed, just record the result
+                        LOG.info("load result {}", loadResult);
+                        return;
+                    }
+                }
+                hostPort = RestService.getBackend(dorisOptions, dorisReadOptions, LOG);
             }
         }
 
-        if (statusCode != 200) {
-            throw new DorisRuntimeException("stream load error: " + reasonPhrase);
-        }
-
-        ObjectMapper mapper = new ObjectMapper();
-        if (response.getEntity() != null) {
-            String loadResult = EntityUtils.toString(response.getEntity());
-            Map<String, String> res = mapper.readValue(loadResult, new TypeReference<HashMap<String, String>>() {
-            });
-            if (res.get("status").equals(FAIL) && !ResponseUtil.isCommitted(res.get("msg"))) {
-                throw new DorisRuntimeException("Commit failed " + loadResult);
-            } else {
-                LOG.info("load result {}", loadResult);
-            }
-        }
+        // should never reach here
+        throw new DorisRuntimeException("Commit failed with unknown issue!");
     }
 
     @Override
