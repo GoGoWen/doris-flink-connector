@@ -17,6 +17,8 @@
 
 package org.apache.doris.flink.sink.writer;
 
+import org.apache.doris.flink.exception.DorisException;
+import org.apache.doris.flink.sink.HttpPutBuilder;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 import org.apache.doris.flink.cfg.DorisExecutionOptions;
@@ -46,12 +48,9 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
-import static org.apache.doris.flink.sink.LoadStatus.PUBLISH_TIMEOUT;
-import static org.apache.doris.flink.sink.LoadStatus.SUCCESS;
+import static org.apache.doris.flink.sink.LoadStatus.*;
+
 
 /**
  * Doris Writer will load data to doris.
@@ -62,18 +61,14 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
     private static final List<String> DORIS_SUCCESS_STATUS = new ArrayList<>(Arrays.asList(SUCCESS, PUBLISH_TIMEOUT));
     private final long lastCheckpointId;
     private DorisStreamLoad dorisStreamLoad;
-    volatile boolean loading;
-    private final DorisOptions dorisOptions;
-    private final DorisReadOptions dorisReadOptions;
-    private final DorisExecutionOptions executionOptions;
+    private volatile boolean loading;
     private final String labelPrefix;
     private final LabelGenerator labelGenerator;
-    private final int intervalTime;
     private final DorisWriterState dorisWriterState;
     private final DorisRecordSerializer<IN> serializer;
-    private final transient ScheduledExecutorService scheduledExecutorService;
-    private transient Thread executorThread;
     private transient volatile Exception loadException = null;
+    private DorisStreamLoadManager dorisStreamLoadManager;
+    private long curCheckpointId = -1;
 
     public DorisWriter(Sink.InitContext initContext,
                        List<DorisWriterState> state,
@@ -90,102 +85,70 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
         this.dorisWriterState = new DorisWriterState(executionOptions.getLabelPrefix());
         this.labelPrefix = executionOptions.getLabelPrefix() + "_" + initContext.getSubtaskId();
         this.labelGenerator = new LabelGenerator(labelPrefix, executionOptions.enabled2PC());
-        this.scheduledExecutorService = new ScheduledThreadPoolExecutor(1, new ExecutorThreadFactory("stream-load-check"));
         this.serializer = serializer;
-        this.dorisOptions = dorisOptions;
-        this.dorisReadOptions = dorisReadOptions;
-        this.executionOptions = executionOptions;
-        this.intervalTime = executionOptions.checkInterval();
-        this.loading = false;
+
+        StreamLoadPara para = new StreamLoadPara();
+        para.lastCheckpointId = lastCheckpointId;
+        para.labelPrefix = labelPrefix;
+        para.dorisOptions = dorisOptions;
+        para.dorisReadOptions = dorisReadOptions;
+        para.executionOptions = executionOptions;
+        this.dorisStreamLoadManager = DorisStreamLoadManager.getDorisStreamLoadManager();
+        this.dorisStreamLoadManager.init(initContext.getSubtaskId(), para);
     }
 
     public void initializeLoad(List<DorisWriterState> state) throws IOException {
-        try {
-            this.dorisStreamLoad = new DorisStreamLoad(
-                    RestService.getBackend(dorisOptions, dorisReadOptions, LOG),
-                    dorisOptions,
-                    executionOptions,
-                    labelGenerator, new HttpUtil().getHttpClient());
-            // TODO: we need check and abort all pending transaction.
-            //  Discard transactions that may cause the job to fail.
-            if(executionOptions.enabled2PC()) {
-                dorisStreamLoad.abortPreCommit(labelPrefix, lastCheckpointId + 1);
-            }
-        } catch (Exception e) {
-            throw new DorisRuntimeException(e);
-        }
-        // get main work thread.
-        executorThread = Thread.currentThread();
-        dorisStreamLoad.startLoad(labelGenerator.generateLabel(lastCheckpointId + 1));
-        // when uploading data in streaming mode, we need to regularly detect whether there are exceptions.
-        scheduledExecutorService.scheduleWithFixedDelay(this::checkDone, 200, intervalTime, TimeUnit.MILLISECONDS);
+        // move DorisStreamLoadManager
+        this.dorisStreamLoadManager.initializeLoad(state);
     }
 
     @Override
     public void write(IN in, Context context) throws IOException {
+        while(dorisStreamLoadManager.isStopReceiveData()){
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+
+            }
+        }
         checkLoadException();
         byte[] serialize = serializer.serialize(in);
         if(Objects.isNull(serialize)){
             return;
         }
-        dorisStreamLoad.writeRecord(serialize);
+
+        // TODO encap the next to DorisStreamLoadManager::write
+        dorisStreamLoadManager.writeRecord(serialize, curCheckpointId);
     }
 
     @Override
     public List<DorisCommittable> prepareCommit(boolean flush) throws IOException {
         // disable exception checker before stop load.
-        loading = false;
-        Preconditions.checkState(dorisStreamLoad != null);
-        RespContent respContent = dorisStreamLoad.stopLoad();
+        dorisStreamLoadManager.setLoading(false);
+        Preconditions.checkState(dorisStreamLoadManager != null);
+        RespContent respContent = dorisStreamLoadManager.stopLoad();
         if (!DORIS_SUCCESS_STATUS.contains(respContent.getStatus())) {
-            String errMsg = String.format("stream load error: %s, see more in %s", respContent.getMessage(), respContent.getErrorURL());
+            String errMsg = String.format("stream load error: %s, see more in %s", respContent.getMessage(),
+                                                respContent.getErrorURL());
             throw new DorisRuntimeException(errMsg);
         }
-        if (!executionOptions.enabled2PC()) {
+        if (!dorisStreamLoadManager.enabled2PC()) {
             return Collections.emptyList();
         }
         long txnId = respContent.getTxnId();
 
-        return ImmutableList.of(new DorisCommittable(dorisStreamLoad.getHostPort(), dorisStreamLoad.getDb(), txnId));
+        return ImmutableList.of(new DorisCommittable(dorisStreamLoadManager.getHostPort(), dorisStreamLoadManager.getDb(),
+                                    txnId, curCheckpointId));
     }
 
     @Override
     public List<DorisWriterState> snapshotState(long checkpointId) throws IOException {
-        Preconditions.checkState(dorisStreamLoad != null);
-        this.dorisStreamLoad.startLoad(labelGenerator.generateLabel(checkpointId + 1));
-        this.loading = true;
+        Preconditions.checkState(dorisStreamLoadManager != null);
+        long nextCheckpointId = checkpointId + 1;
+        this.dorisStreamLoadManager.startLoad(labelGenerator.generateLabel(nextCheckpointId), nextCheckpointId);
+        curCheckpointId = nextCheckpointId;
+        dorisStreamLoadManager.setLoading(true);
         return Collections.singletonList(dorisWriterState);
-    }
-
-    private void checkDone() {
-        // the load future is done and checked in prepareCommit().
-        // this will check error while loading.
-        LOG.debug("start timer checker, interval {} ms", intervalTime);
-        if (dorisStreamLoad.getPendingLoadFuture() != null
-                && dorisStreamLoad.getPendingLoadFuture().isDone()) {
-            if (!loading) {
-                LOG.debug("not loading, skip timer checker");
-                return;
-            }
-
-            // double check the future, to avoid getting the old future
-            if (dorisStreamLoad.getPendingLoadFuture() != null
-                    && dorisStreamLoad.getPendingLoadFuture().isDone()) {
-                // TODO: introduce cache for reload instead of throwing exceptions.
-                String errorMsg;
-                try {
-                    RespContent content = dorisStreamLoad.handlePreCommitResponse(dorisStreamLoad.getPendingLoadFuture().get());
-                    errorMsg = content.getMessage();
-                } catch (Exception e) {
-                    errorMsg = e.getMessage();
-                }
-
-                loadException = new StreamLoadException(errorMsg);
-                LOG.error("stream load finished unexpectedly, interrupt worker thread! {}", errorMsg);
-                // set the executor thread interrupted in case blocking in write data.
-                executorThread.interrupt();
-            }
-        }
     }
 
     private void checkLoadException() {
@@ -196,21 +159,18 @@ public class DorisWriter<IN> implements SinkWriter<IN, DorisCommittable, DorisWr
 
     @VisibleForTesting
     public boolean isLoading() {
-        return this.loading;
+        return dorisStreamLoadManager.isLoading();
     }
 
     @VisibleForTesting
     public void setDorisStreamLoad(DorisStreamLoad streamLoad) {
-        this.dorisStreamLoad = streamLoad;
+        dorisStreamLoadManager.setDorisStreamLoad(streamLoad);
     }
 
     @Override
     public void close() throws Exception {
-        if (scheduledExecutorService != null) {
-            scheduledExecutorService.shutdownNow();
-        }
-        if (dorisStreamLoad != null) {
-            dorisStreamLoad.close();
+        if (dorisStreamLoadManager != null) {
+            dorisStreamLoadManager.close();
         }
     }
 
