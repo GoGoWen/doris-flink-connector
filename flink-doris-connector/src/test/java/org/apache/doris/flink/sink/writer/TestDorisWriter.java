@@ -61,12 +61,12 @@ public class TestDorisWriter {
         CloseableHttpResponse preCommitResponse = HttpTestUtil.getResponse(HttpTestUtil.PRE_COMMIT_RESPONSE, true);
         when(httpClient.execute(any())).thenReturn(preCommitResponse);
 
-        DorisStreamLoadImpl dorisStreamLoadImpl = new DorisStreamLoadImpl("local:8040", dorisOptions, executionOptions, new LabelGenerator("", true), httpClient);
-        dorisStreamLoadImpl.startLoad("");
+        DorisStreamLoad dorisStreamLoad = new DorisStreamLoad("local:8040", dorisOptions, executionOptions, new LabelGenerator("", true), httpClient);
+        dorisStreamLoad.startLoad("");
         Sink.InitContext initContext = mock(Sink.InitContext.class);
         when(initContext.getRestoredCheckpointId()).thenReturn(OptionalLong.of(1));
         DorisWriter<String> dorisWriter = new DorisWriter<String>(initContext, Collections.emptyList(), new SimpleStringSerializer(), dorisOptions, readOptions, executionOptions);
-        dorisWriter.setDorisStreamLoad(dorisStreamLoadImpl);
+        dorisWriter.setDorisStreamLoad(dorisStreamLoad);
         List<DorisCommittable> committableList = dorisWriter.prepareCommit(true);
 
         Assert.assertEquals(1, committableList.size());
@@ -82,11 +82,11 @@ public class TestDorisWriter {
         CloseableHttpResponse preCommitResponse = HttpTestUtil.getResponse(HttpTestUtil.PRE_COMMIT_RESPONSE, true);
         when(httpClient.execute(any())).thenReturn(preCommitResponse);
 
-        DorisStreamLoadImpl dorisStreamLoadImpl = new DorisStreamLoadImpl("local:8040", dorisOptions, executionOptions, new LabelGenerator("", true), httpClient);
+        DorisStreamLoad dorisStreamLoad = new DorisStreamLoad("local:8040", dorisOptions, executionOptions, new LabelGenerator("", true), httpClient);
         Sink.InitContext initContext = mock(Sink.InitContext.class);
         when(initContext.getRestoredCheckpointId()).thenReturn(OptionalLong.of(1));
         DorisWriter<String> dorisWriter = new DorisWriter<String>(initContext, Collections.emptyList(), new SimpleStringSerializer(), dorisOptions, readOptions, executionOptions);
-        dorisWriter.setDorisStreamLoad(dorisStreamLoadImpl);
+        dorisWriter.setDorisStreamLoad(dorisStreamLoad);
         List<DorisWriterState> writerStates = dorisWriter.snapshotState(1);
 
         Assert.assertEquals(1, writerStates.size());
