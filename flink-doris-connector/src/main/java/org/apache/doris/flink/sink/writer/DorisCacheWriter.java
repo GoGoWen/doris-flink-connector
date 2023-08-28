@@ -52,7 +52,6 @@ public class DorisCacheWriter<IN> implements SinkWriter<IN, DorisCommittable, Do
     private static final Logger LOG = LoggerFactory.getLogger(DorisCacheWriter.class);
     private static final List<String> DORIS_SUCCESS_STATUS = new ArrayList<>(Arrays.asList(SUCCESS, PUBLISH_TIMEOUT));
     private final long lastCheckpointId;
-    private DorisStreamLoadImpl dorisStreamLoadImpl;
     private final String labelPrefix;
     private final LabelGenerator labelGenerator;
     private final DorisWriterState dorisWriterState;
@@ -85,7 +84,7 @@ public class DorisCacheWriter<IN> implements SinkWriter<IN, DorisCommittable, Do
         para.dorisReadOptions = dorisReadOptions;
         para.executionOptions = executionOptions;
         this.dorisStreamLoadManager = DorisStreamLoadManager.getDorisStreamLoadManager();
-        this.dorisStreamLoadManager.init(initContext.getSubtaskId(), para);
+        this.dorisStreamLoadManager.init(para);
     }
 
     public void initializeLoad(List<DorisWriterState> state) throws IOException {
@@ -102,7 +101,7 @@ public class DorisCacheWriter<IN> implements SinkWriter<IN, DorisCommittable, Do
         }
 
         // TODO encap the next to DorisStreamLoadManager::write
-        dorisStreamLoadManager.writeRecord(serialize, curCheckpointId);
+        dorisStreamLoadManager.writeRecord(serialize);
     }
 
     @Override
@@ -113,7 +112,7 @@ public class DorisCacheWriter<IN> implements SinkWriter<IN, DorisCommittable, Do
         RespContent respContent = dorisStreamLoadManager.stopLoad();
         if (!DORIS_SUCCESS_STATUS.contains(respContent.getStatus())) {
             String errMsg = String.format("stream load error: %s, see more in %s", respContent.getMessage(),
-                                                respContent.getErrorURL());
+                    respContent.getErrorURL());
             throw new DorisRuntimeException(errMsg);
         }
         if (!dorisStreamLoadManager.enabled2PC()) {
@@ -121,8 +120,10 @@ public class DorisCacheWriter<IN> implements SinkWriter<IN, DorisCommittable, Do
         }
         long txnId = respContent.getTxnId();
 
+        LOG.info("prepareCommit finished");
+
         return ImmutableList.of(new DorisCommittable(dorisStreamLoadManager.getHostPort(), dorisStreamLoadManager.getDb(),
-                                    txnId, curCheckpointId));
+                txnId, curCheckpointId));
     }
 
     @Override
