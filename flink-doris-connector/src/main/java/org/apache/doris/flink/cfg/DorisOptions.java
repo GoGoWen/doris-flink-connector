@@ -30,20 +30,27 @@ public class DorisOptions extends DorisConnectionOptions {
     private static final long serialVersionUID = 1L;
 
     private String tableIdentifier;
+    private Boolean useCacheWriter;
 
 
-    public DorisOptions(String fenodes, String username, String password, String tableIdentifier) {
+    public DorisOptions(String fenodes, String username, String password, String tableIdentifier,Boolean useCacheWriter) {
         super(fenodes, username, password);
         this.tableIdentifier = tableIdentifier;
+        this.useCacheWriter = useCacheWriter;
     }
 
-    public DorisOptions(String fenodes, String username, String password, String tableIdentifier, String jdbcUrl) {
+    public DorisOptions(String fenodes, String username, String password, String tableIdentifier, String jdbcUrl,Boolean useCacheWriter) {
         super(fenodes, username, password, jdbcUrl);
         this.tableIdentifier = tableIdentifier;
+        this.useCacheWriter = useCacheWriter;
     }
 
     public String getTableIdentifier() {
         return tableIdentifier;
+    }
+
+    public Boolean isUseCacheWriter() {
+        return useCacheWriter;
     }
 
     public String save() throws IllegalArgumentException {
@@ -65,6 +72,7 @@ public class DorisOptions extends DorisConnectionOptions {
         private String username;
         private String password;
         private String tableIdentifier;
+        private boolean useCacheWriter;
 
         /**
          * required, tableIdentifier
@@ -106,10 +114,18 @@ public class DorisOptions extends DorisConnectionOptions {
             return this;
         }
 
+        /**
+         * not required,
+         */
+        public Builder setUseCacheWriter(Boolean useCacheWriter) {
+            this.useCacheWriter = useCacheWriter;
+            return this;
+        }
+
         public DorisOptions build() {
             checkNotNull(fenodes, "No fenodes supplied.");
             checkNotNull(tableIdentifier, "No tableIdentifier supplied.");
-            return new DorisOptions(fenodes, username, password, tableIdentifier, jdbcUrl);
+            return new DorisOptions(fenodes, username, password, tableIdentifier, jdbcUrl, useCacheWriter);
         }
     }
 
