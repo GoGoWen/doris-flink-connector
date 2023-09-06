@@ -37,6 +37,7 @@ public class DorisExecutionOptions implements Serializable {
     private final int bufferSize;
     private final int bufferCount;
     private final String labelPrefix;
+    private final boolean useCache;
 
     /**
      * Properties for the StreamLoad.
@@ -52,6 +53,7 @@ public class DorisExecutionOptions implements Serializable {
                                  int bufferSize,
                                  int bufferCount,
                                  String labelPrefix,
+                                 boolean useCache,
                                  Properties streamLoadProp,
                                  Boolean enableDelete,
                                  Boolean enable2PC) {
@@ -61,6 +63,7 @@ public class DorisExecutionOptions implements Serializable {
         this.bufferSize = bufferSize;
         this.bufferCount = bufferCount;
         this.labelPrefix = labelPrefix;
+        this.useCache = useCache;
         this.streamLoadProp = streamLoadProp;
         this.enableDelete = enableDelete;
         this.enable2PC = enable2PC;
@@ -101,6 +104,10 @@ public class DorisExecutionOptions implements Serializable {
         return labelPrefix;
     }
 
+    public boolean isUseCache () {
+        return useCache;
+    }
+
     public Properties getStreamLoadProp() {
         return streamLoadProp;
     }
@@ -121,6 +128,7 @@ public class DorisExecutionOptions implements Serializable {
         private int bufferSize = DEFAULT_BUFFER_SIZE;
         private int bufferCount = DEFAULT_BUFFER_COUNT;
         private String labelPrefix = "";
+        private boolean useCache = false;
         private Properties streamLoadProp = new Properties();
         private boolean enableDelete = true;
 
@@ -151,6 +159,11 @@ public class DorisExecutionOptions implements Serializable {
             return this;
         }
 
+        public Builder setUseCache(boolean useCache) {
+            this.useCache = useCache;
+            return this;
+        }
+
         public Builder setStreamLoadProp(Properties streamLoadProp) {
             this.streamLoadProp = streamLoadProp;
             return this;
@@ -167,7 +180,7 @@ public class DorisExecutionOptions implements Serializable {
         }
 
         public DorisExecutionOptions build() {
-            return new DorisExecutionOptions(checkInterval, maxRetries, bufferSize, bufferCount, labelPrefix, streamLoadProp, enableDelete, enable2PC);
+            return new DorisExecutionOptions(checkInterval, maxRetries, bufferSize, bufferCount, labelPrefix, useCache, streamLoadProp, enableDelete, enable2PC);
         }
     }
 
